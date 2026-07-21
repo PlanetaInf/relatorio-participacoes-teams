@@ -179,6 +179,10 @@ def build_rows(activities, organizer_email, modulos):
                 sessoes, mod["inicio"], mod["fim"]
             )
             total_aus = sum((d for _, _, d in aus_list), timedelta())
+            dur_mod   = mod["fim"] - mod["inicio"]
+            limite    = dur_mod * 0.20  # 20% da duração do módulo
+            reprovado = total_aus > limite
+
             obs = []
             n_mid = sum(
                 1 for gi, gf, _ in aus_list
@@ -189,18 +193,22 @@ def build_rows(activities, organizer_email, modulos):
             if saida_ant.total_seconds() > 60: obs.append(f"Saiu {fmt_dur(saida_ant)} antes do fim")
             mod_data.append({
                 "pres": pres, "aus": total_aus,
+                "limite_aus": limite,
                 "obs": "; ".join(obs) if obs else "—",
                 "has_issue": bool(obs),
+                "reprovado": reprovado,
             })
 
-        total_pres = sum((m["pres"] for m in mod_data), timedelta())
-        total_aus  = (sessao_fim - sessao_inicio) - total_pres
+        total_pres  = sum((m["pres"] for m in mod_data), timedelta())
+        total_aus   = (sessao_fim - sessao_inicio) - total_pres
+        reprovado   = any(m["reprovado"] for m in mod_data)
         rows.append({
             "nome": nome, "email": email,
             "entrada": sessoes[0][0], "saida": sessoes[-1][1],
             "sessoes_list": sessoes,
             "mod_data": mod_data,
             "total_pres": total_pres, "total_aus": total_aus,
+            "reprovado": reprovado,
         })
 
     rows.sort(key=lambda r: r["entrada"])
@@ -246,8 +254,12 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
     ws.sheet_view.showGridLines = False
 
     n_mod = len(modulos)
-    # Colunas: 5 identificação + 3*n_mod módulos + 3 totais
-    total_cols = 5 + 3 * n_mod + 3
+    # Colunas: 5 identificação + 4*n_mod módulos + 4 totais (inclui resultado por módulo e global)
+    total_cols = 5 + 4 * n_mod + 4
+    COR_APROVADO  = "C6EFCE"
+    COR_REPROVADO = "FFC7CE"
+    COR_APR_FT    = "276221"
+    COR_REP_FT    = "9C0006"
 
     def col_letter(n): return get_column_letter(n)
 
@@ -270,18 +282,21 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
     col_offset = 6
     for mi, mod in enumerate(modulos):
         start_col = col_offset
-        end_col   = col_offset + 2
+        end_col   = col_offset + 3
         ws.merge_cells(f"{col_letter(start_col)}2:{col_letter(end_col)}2")
         c = ws[f"{col_letter(start_col)}2"]
+        dur_mod = mod["fim"] - mod["inicio"]
+        limite  = dur_mod * 0.20
         c.value = (f"Módulo {mi+1} — {mod['nome']}  "
-                   f"({mod['inicio'].strftime('%H:%M')} – {mod['fim'].strftime('%H:%M')})")
+                   f"({mod['inicio'].strftime('%H:%M')} – {mod['fim'].strftime('%H:%M')})  "
+                   f"| Limite ausência: {fmt_dur(limite)}")
         c.font      = Font(bold=True, size=10, color="FFFFFF")
         c.fill      = PatternFill("solid", fgColor=CORES_MOD_HDR[mi % len(CORES_MOD_HDR)])
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border    = bd()
-        col_offset += 3
+        col_offset += 4
 
-    ws.merge_cells(f"{col_letter(col_offset)}2:{col_letter(col_offset+2)}2")
+    ws.merge_cells(f"{col_letter(col_offset)}2:{col_letter(col_offset+3)}2")
     c = ws[f"{col_letter(col_offset)}2"]
     c.value = f"Totais da Sessão  ({sessao_inicio.strftime('%H:%M')} – {sessao_fim.strftime('%H:%M')})"
     c.font      = Font(bold=True, size=10, color="FFFFFF")
@@ -297,10 +312,12 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
         bg = CORES_MOD_HDR[mi % len(CORES_MOD_HDR)]
         hdrs += [(f"Presente\nMód.{mi+1}", bg),
                  (f"Ausente\nMód.{mi+1}",  bg),
-                 (f"Ocorrências\nMód.{mi+1}", bg)]
-    hdrs += [("Total\nPresente", COR_TOTAL_HDR),
-             ("Total\nAusente",  COR_TOTAL_HDR),
-             ("Síntese",         COR_TOTAL_HDR)]
+                 (f"Ocorrências\nMód.{mi+1}", bg),
+                 (f"Resultado\nMód.{mi+1}", bg)]
+    hdrs += [("Total\nPresente",   COR_TOTAL_HDR),
+             ("Total\nAusente",   COR_TOTAL_HDR),
+             ("Síntese",          COR_TOTAL_HDR),
+             ("RESULTADO\nFINAL", "880000")]
     for col, (h, bg) in enumerate(hdrs, 1):
         hc(ws, 3, col, h, bg)
     ws.row_dimensions[3].height = 40
@@ -326,29 +343,38 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
             m_bg = ("F4CCCC" if m["has_issue"]
                     else CORES_MOD_ROW[mi % len(CORES_MOD_ROW)])
             aus_s = fmt_dur(m["aus"]) if m["aus"].total_seconds() > 60 else "—"
+            res_bg = COR_REPROVADO if m["reprovado"] else COR_APROVADO
+            res_ft = COR_REP_FT   if m["reprovado"] else COR_APR_FT
+            res_v  = "REPROVADO" if m["reprovado"] else "APROVADO"
             dc(ws, rn, col_offset,   fmt_dur(m["pres"]),  bg=m_bg, bold=True)
             dc(ws, rn, col_offset+1, aus_s, bg=m_bg,
                bold=m["aus"].total_seconds()>60,
                ft=RED if m["aus"].total_seconds()>60 else "000000")
             dc(ws, rn, col_offset+2, m["obs"], bg=m_bg, align="left",
                ft=RED if m["has_issue"] else "000000")
-            col_offset += 3
+            dc(ws, rn, col_offset+3, res_v, bg=res_bg, bold=True, ft=res_ft)
+            col_offset += 4
 
-        t_aus_s = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
+        t_aus_s  = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
+        res_glob_bg = COR_REPROVADO if r["reprovado"] else COR_APROVADO
+        res_glob_ft = COR_REP_FT   if r["reprovado"] else COR_APR_FT
+        res_glob_v  = "REPROVADO"  if r["reprovado"] else "APROVADO"
         dc(ws, rn, col_offset,   fmt_dur(r["total_pres"]), bg=row_bg, bold=True)
         dc(ws, rn, col_offset+1, t_aus_s, bg=row_bg,
            bold=r["total_aus"].total_seconds()>60,
            ft=RED if r["total_aus"].total_seconds()>60 else "000000")
         dc(ws, rn, col_offset+2, syn, bg=row_bg, align="left",
            ft=RED if any_issue else "000000")
-        ws.row_dimensions[rn].height = 18
+        dc(ws, rn, col_offset+3, res_glob_v, bg=res_glob_bg, bold=True,
+           ft=res_glob_ft, sz=11)
+        ws.row_dimensions[rn].height = 20
 
     # Legenda
     lr = len(rows) + 5
     ws.merge_cells(f"A{lr}:{col_letter(total_cols)}{lr}")
     c = ws[f"A{lr}"]
-    c.value = ("Legenda:  🟢 Verde = sem ocorrências   "
-               "🟠 Laranja = atraso / ausência / saída antecipada")
+    c.value = ("Legenda:  🟢 Verde = sem ocorrências   🟠 Laranja = ocorrências   "
+               "✅ APROVADO = ausência ≤ 20% por módulo   ❌ REPROVADO = ausência > 20% em algum módulo")
     c.font      = Font(italic=True, size=9, color="444444")
     c.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[lr].height = 15
@@ -356,8 +382,8 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
     # Larguras
     widths = [5, 26, 34, 11, 11]
     for _ in modulos:
-        widths += [15, 15, 36]
-    widths += [15, 15, 44]
+        widths += [15, 15, 36, 14]
+    widths += [15, 15, 44, 16]
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[col_letter(col)].width = w
 
@@ -597,27 +623,36 @@ else:
                 "Última Saída": fmt_time(r["saida"]),
             }
             for mi, m in enumerate(r["mod_data"]):
-                label = f"Mod.{mi+1} Presente"
-                row_d[label] = fmt_dur(m["pres"])
-                aus_s = fmt_dur(m["aus"]) if m["aus"].total_seconds() > 60 else "—"
-                row_d[f"Mod.{mi+1} Ausente"] = aus_s
+                row_d[f"Mod.{mi+1} Presente"]    = fmt_dur(m["pres"])
+                row_d[f"Mod.{mi+1} Ausente"]     = fmt_dur(m["aus"]) if m["aus"].total_seconds() > 60 else "—"
                 row_d[f"Mod.{mi+1} Ocorrências"] = m["obs"]
+                row_d[f"Mod.{mi+1} Resultado"]   = "❌ REPROVADO" if m["reprovado"] else "✅ APROVADO"
             row_d["Total Presente"] = fmt_dur(r["total_pres"])
             row_d["Total Ausente"]  = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
-            row_d["Estado"] = "⚠️ Ocorrência" if any(m["has_issue"] for m in r["mod_data"]) else "✅ OK"
+            row_d["Resultado Final"] = "❌ REPROVADO" if r["reprovado"] else "✅ APROVADO"
             table_data.append(row_d)
 
         if table_data:
             import pandas as pd
             df = pd.DataFrame(table_data)
 
-            def color_estado(val):
-                if "⚠️" in str(val): return "background-color: #FCE4D6; color: #C00000; font-weight:bold"
-                if "✅" in str(val): return "background-color: #E2EFDA; color: #198754; font-weight:bold"
+            resultado_cols = [c for c in df.columns if "Resultado" in c]
+
+            def color_resultado(val):
+                if "REPROVADO" in str(val): return "background-color: #FFC7CE; color: #9C0006; font-weight:bold"
+                if "APROVADO"  in str(val): return "background-color: #C6EFCE; color: #276221; font-weight:bold"
                 return ""
 
-            styled = df.style.map(color_estado, subset=["Estado"])
+            styled = df.style.map(color_resultado, subset=resultado_cols)
             st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            # Resumo rápido de aprovações
+            n_rep = sum(1 for r in rows if r["reprovado"])
+            n_apr = len(rows) - n_rep
+            ca, cb = st.columns(2)
+            ca.success(f"✅ **{n_apr} Aprovados**")
+            if n_rep > 0:
+                cb.error(f"❌ **{n_rep} Reprovados** — ausência > 20% em algum módulo")
 
     with tab2:
         for r in rows:
