@@ -144,6 +144,73 @@ def parse_csv(file_bytes):
 
     return activities, organizer_email, sessao_date
 
+
+def parse_xls(file_bytes):
+    """Lê o XLS do Teams (formato binário Excel) e devolve dict email -> {nome, sessoes[]}"""
+    try:
+        import xlrd
+    except ImportError:
+        raise RuntimeError("Biblioteca 'xlrd' não instalada. Execute: pip install xlrd")
+
+    import io
+    wb = xlrd.open_workbook(file_contents=file_bytes)
+    ws = wb.sheet_by_index(0)
+
+    activities = {}
+    organizer_email = None
+    in_part = False
+    in_act  = False
+
+    for r in range(ws.nrows):
+        row = [str(ws.cell_value(r, c)).strip() for c in range(ws.ncols)]
+        first = row[0] if row else ""
+
+        if first.startswith("2. Participantes"):
+            in_part = True; in_act = False; continue
+        if first.startswith("3. Atividades"):
+            in_act = True; in_part = False; continue
+        if first.startswith("4."):
+            in_act = False; in_part = False; continue
+
+        if in_part and len(row) >= 8 and first not in ("", "Nome"):
+            email  = row[5]
+            funcao = row[7] if len(row) > 7 else ""
+            if funcao == "Organizador":
+                organizer_email = email
+
+        if in_act and len(row) >= 6 and first not in ("", "Nome"):
+            nome_raw = row[0]
+            e_s, s_s = row[1], row[2]
+            email    = row[5]
+            e, s = parse_dt(e_s), parse_dt(s_s)
+            if e and s:
+                if email not in activities:
+                    activities[email] = {
+                        "nome": nome_raw.replace(" (Convidado)", ""),
+                        "sessoes": [],
+                    }
+                activities[email]["sessoes"].append((e, s))
+
+    for d in activities.values():
+        d["sessoes"].sort(key=lambda x: x[0])
+
+    sessao_date = None
+    all_entries = [e for d in activities.values() for e, _ in d["sessoes"]]
+    if all_entries:
+        sessao_date = min(all_entries).date()
+
+    return activities, organizer_email, sessao_date
+
+
+def parse_file(file_bytes, filename=""):
+    """Detecta o tipo de ficheiro e chama o parser adequado."""
+    # Deteção por magic bytes: d0 cf 11 e0 = OLE2 (XLS binário)
+    is_xls = file_bytes[:4] == b"\xd0\xcf\x11\xe0" or filename.lower().endswith(".xls")
+    if is_xls:
+        return parse_xls(file_bytes), "xls"
+    else:
+        return parse_csv(file_bytes), "csv"
+
 def presence_in_window(sessoes, win_ini, win_fim):
     """Calcula presença, ausências, atraso e saída antecipada numa janela temporal."""
     clipped = []
@@ -500,16 +567,16 @@ with st.sidebar:
 
     st.markdown('<div class="section-title">📁 Ficheiro Teams</div>', unsafe_allow_html=True)
     uploaded = st.file_uploader(
-        "Relatório de participações (.csv)",
-        type=["csv"],
+        "Relatório de participações (.csv ou .xls)",
+        type=["csv", "xls"],
         help="Exportado diretamente do Microsoft Teams → Participantes → Transferir lista de participantes",
     )
 
-    # Pré-processar CSV para detetar data automaticamente
+    # Pré-processar ficheiro para detetar data automaticamente
     if uploaded:
         try:
-            file_bytes_preview = uploaded.getvalue()  # lê sem consumir o cursor
-            _, _, detected_date = parse_csv(file_bytes_preview)
+            file_bytes_preview = uploaded.getvalue()
+            (_, _, detected_date), _ = parse_file(file_bytes_preview, uploaded.name)
             if detected_date and st.session_state.get("last_file") != uploaded.name:
                 st.session_state["detected_date"] = detected_date
                 st.session_state["last_file"] = uploaded.name
@@ -577,13 +644,20 @@ if not uploaded:
 - Exemplo: Módulo 1 (19h–21h) + Módulo 2 (21h–23h)
         """)
 else:
-    # Processar CSV
+    # Processar ficheiro (CSV ou XLS)
     file_bytes = uploaded.getvalue()
     try:
-        activities, organizer_email, _ = parse_csv(file_bytes)
+        (activities, organizer_email, _), file_type = parse_file(file_bytes, uploaded.name)
     except Exception as e:
         st.error(f"Erro ao processar o ficheiro: {e}")
         st.stop()
+
+    if file_type == "xls":
+        st.info(
+            "ℹ️ Ficheiro XLS detetado. O Teams regista apenas a primeira entrada e última saída "
+            "por participante neste formato — ausências intermédias curtas podem não ser capturadas. "
+            "Para máximo detalhe, exporte como **CSV** (Participantes → Transferir lista de participantes)."
+        )
 
     # Construir módulos com datas
     modulos_config = []
