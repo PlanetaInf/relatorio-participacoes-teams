@@ -79,6 +79,17 @@ def fmt_dur(td):
 def fmt_time(dt):
     return dt.strftime("%H:%M:%S")
 
+def fmt_margem(aus, limite):
+    """Devolve a margem em relação ao limite de 20%: '+Xmin' se excedeu, '-Xmin' se ainda tem margem."""
+    diff = int((aus - limite).total_seconds())
+    sinal = "+" if diff > 0 else "-"
+    diff  = abs(diff)
+    h, r  = divmod(diff, 3600)
+    m, s  = divmod(r, 60)
+    if h > 0:   return f"{sinal}{h}h {m:02d}min"
+    elif m > 0: return f"{sinal}{m}min {s:02d}s" if s else f"{sinal}{m}min"
+    else:       return f"{sinal}{s}s"
+
 def parse_csv(file_bytes):
     """Lê o CSV do Teams (UTF-16) e devolve dict email -> {nome, sessoes[]}"""
     try:
@@ -343,9 +354,10 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
             m_bg = ("F4CCCC" if m["has_issue"]
                     else CORES_MOD_ROW[mi % len(CORES_MOD_ROW)])
             aus_s = fmt_dur(m["aus"]) if m["aus"].total_seconds() > 60 else "—"
+            margem = fmt_margem(m["aus"], m["limite_aus"])
             res_bg = COR_REPROVADO if m["reprovado"] else COR_APROVADO
             res_ft = COR_REP_FT   if m["reprovado"] else COR_APR_FT
-            res_v  = "REPROVADO" if m["reprovado"] else "APROVADO"
+            res_v  = f"REPROVADO ({margem})" if m["reprovado"] else f"APROVADO ({margem})"
             dc(ws, rn, col_offset,   fmt_dur(m["pres"]),  bg=m_bg, bold=True)
             dc(ws, rn, col_offset+1, aus_s, bg=m_bg,
                bold=m["aus"].total_seconds()>60,
@@ -355,10 +367,12 @@ def generate_excel(rows, modulos, sessao_inicio, sessao_fim,
             dc(ws, rn, col_offset+3, res_v, bg=res_bg, bold=True, ft=res_ft)
             col_offset += 4
 
-        t_aus_s  = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
+        t_aus_s     = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
+        total_limite= sum((m["limite_aus"] for m in r["mod_data"]), timedelta())
+        margem_glob = fmt_margem(r["total_aus"], total_limite)
         res_glob_bg = COR_REPROVADO if r["reprovado"] else COR_APROVADO
         res_glob_ft = COR_REP_FT   if r["reprovado"] else COR_APR_FT
-        res_glob_v  = "REPROVADO"  if r["reprovado"] else "APROVADO"
+        res_glob_v  = f"REPROVADO ({margem_glob})" if r["reprovado"] else f"APROVADO ({margem_glob})"
         dc(ws, rn, col_offset,   fmt_dur(r["total_pres"]), bg=row_bg, bold=True)
         dc(ws, rn, col_offset+1, t_aus_s, bg=row_bg,
            bold=r["total_aus"].total_seconds()>60,
@@ -626,10 +640,13 @@ else:
                 row_d[f"Mod.{mi+1} Presente"]    = fmt_dur(m["pres"])
                 row_d[f"Mod.{mi+1} Ausente"]     = fmt_dur(m["aus"]) if m["aus"].total_seconds() > 60 else "—"
                 row_d[f"Mod.{mi+1} Ocorrências"] = m["obs"]
-                row_d[f"Mod.{mi+1} Resultado"]   = "❌ REPROVADO" if m["reprovado"] else "✅ APROVADO"
-            row_d["Total Presente"] = fmt_dur(r["total_pres"])
-            row_d["Total Ausente"]  = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
-            row_d["Resultado Final"] = "❌ REPROVADO" if r["reprovado"] else "✅ APROVADO"
+                margem = fmt_margem(m["aus"], m["limite_aus"])
+                row_d[f"Mod.{mi+1} Resultado"] = f"❌ REPROVADO ({margem})" if m["reprovado"] else f"✅ APROVADO ({margem})"
+            total_limite = sum((m["limite_aus"] for m in r["mod_data"]), timedelta())
+            margem_glob  = fmt_margem(r["total_aus"], total_limite)
+            row_d["Total Presente"]  = fmt_dur(r["total_pres"])
+            row_d["Total Ausente"]   = fmt_dur(r["total_aus"]) if r["total_aus"].total_seconds()>60 else "—"
+            row_d["Resultado Final"] = f"❌ REPROVADO ({margem_glob})" if r["reprovado"] else f"✅ APROVADO ({margem_glob})"
             table_data.append(row_d)
 
         if table_data:
